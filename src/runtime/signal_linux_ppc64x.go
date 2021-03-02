@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build linux && (ppc64 || ppc64le)
 // +build linux
 // +build ppc64 ppc64le
 
@@ -67,7 +68,7 @@ func (c *sigctxt) ccr() uint64  { return c.regs().ccr }
 
 func (c *sigctxt) sigcode() uint32 { return uint32(c.info.si_code) }
 func (c *sigctxt) sigaddr() uint64 { return c.info.si_addr }
-func (c *sigctxt) fault() uint64   { return c.regs().dar }
+func (c *sigctxt) fault() uintptr  { return uintptr(c.regs().dar) }
 
 func (c *sigctxt) set_r0(x uint64)   { c.regs().gpr[0] = x }
 func (c *sigctxt) set_r12(x uint64)  { c.regs().gpr[12] = x }

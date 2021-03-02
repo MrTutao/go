@@ -1,6 +1,7 @@
 // Created by cgo -godefs - DO NOT EDIT
 // cgo -godefs types_openbsd.go
 
+//go:build amd64 && openbsd
 // +build amd64,openbsd
 
 package syscall
@@ -71,6 +72,8 @@ const (
 	S_IRUSR  = 0x100
 	S_IWUSR  = 0x80
 	S_IXUSR  = 0x40
+	S_IRWXG  = 0x38
+	S_IRWXO  = 0x7
 )
 
 type Stat_t struct {
@@ -141,6 +144,10 @@ type Dirent struct {
 type Fsid struct {
 	Val [2]int32
 }
+
+const (
+	pathMax = 0x400
+)
 
 type RawSockaddrInet4 struct {
 	Len    uint8

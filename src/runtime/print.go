@@ -6,6 +6,7 @@ package runtime
 
 import (
 	"runtime/internal/atomic"
+	"runtime/internal/sys"
 	"unsafe"
 )
 
@@ -88,7 +89,12 @@ func gwrite(b []byte) {
 	}
 	recordForPanic(b)
 	gp := getg()
-	if gp == nil || gp.writebuf == nil {
+	// Don't use the writebuf if gp.m is dying. We want anything
+	// written through gwrite to appear in the terminal rather
+	// than be written to in some buffer, if we're in a panicking state.
+	// Note that we can't just clear writebuf in the gp.m.dying case
+	// because a panic isn't allowed to have any write barriers.
+	if gp == nil || gp.writebuf == nil || gp.m.dying > 0 {
 		writeErr(b)
 		return
 	}
@@ -210,13 +216,15 @@ func printint(v int64) {
 	printuint(uint64(v))
 }
 
+var minhexdigits = 0 // protected by printlock
+
 func printhex(v uint64) {
 	const dig = "0123456789abcdef"
 	var buf [100]byte
 	i := len(buf)
 	for i--; i > 0; i-- {
 		buf[i] = dig[v%16]
-		if v < 16 {
+		if v < 16 && len(buf)-i >= minhexdigits {
 			break
 		}
 		v /= 16
@@ -230,6 +238,9 @@ func printhex(v uint64) {
 
 func printpointer(p unsafe.Pointer) {
 	printhex(uint64(uintptr(p)))
+}
+func printuintptr(p uintptr) {
+	printhex(uint64(p))
 }
 
 func printstring(s string) {
@@ -248,4 +259,44 @@ func printeface(e eface) {
 
 func printiface(i iface) {
 	print("(", i.tab, ",", i.data, ")")
+}
+
+// hexdumpWords prints a word-oriented hex dump of [p, end).
+//
+// If mark != nil, it will be called with each printed word's address
+// and should return a character mark to appear just before that
+// word's value. It can return 0 to indicate no mark.
+func hexdumpWords(p, end uintptr, mark func(uintptr) byte) {
+	printlock()
+	var markbuf [1]byte
+	markbuf[0] = ' '
+	minhexdigits = int(unsafe.Sizeof(uintptr(0)) * 2)
+	for i := uintptr(0); p+i < end; i += sys.PtrSize {
+		if i%16 == 0 {
+			if i != 0 {
+				println()
+			}
+			print(hex(p+i), ": ")
+		}
+
+		if mark != nil {
+			markbuf[0] = mark(p + i)
+			if markbuf[0] == 0 {
+				markbuf[0] = ' '
+			}
+		}
+		gwrite(markbuf[:])
+		val := *(*uintptr)(unsafe.Pointer(p + i))
+		print(hex(val))
+		print(" ")
+
+		// Can we symbolize val?
+		fn := findfunc(val)
+		if fn.valid() {
+			print("<", funcname(fn), "+", hex(val-fn.entry), "> ")
+		}
+	}
+	minhexdigits = 0
+	println()
+	printunlock()
 }

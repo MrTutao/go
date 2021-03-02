@@ -1,6 +1,7 @@
 // Created by cgo -godefs - DO NOT EDIT
 // cgo -godefs types_netbsd.go
 
+//go:build amd64 && netbsd
 // +build amd64,netbsd
 
 package syscall
@@ -102,6 +103,10 @@ type Dirent struct {
 type Fsid struct {
 	X__fsid_val [2]int32
 }
+
+const (
+	pathMax = 0x400
+)
 
 type RawSockaddrInet4 struct {
 	Len    uint8
@@ -404,4 +409,8 @@ type Sysctlnode struct {
 	X_sysctl_func   [8]byte
 	X_sysctl_parent [8]byte
 	X_sysctl_desc   [8]byte
+}
+
+type sigset struct {
+	X__bits [4]uint32
 }

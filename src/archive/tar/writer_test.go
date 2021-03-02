@@ -7,8 +7,8 @@ package tar
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"io"
-	"io/ioutil"
 	"os"
 	"path"
 	"reflect"
@@ -338,116 +338,135 @@ func TestWriter(t *testing.T) {
 			}, nil},
 			testClose{nil},
 		},
-	}, {
-		file: "testdata/gnu-nil-sparse-data.tar",
-		tests: []testFnc{
-			testHeader{Header{
-				Typeflag:    TypeGNUSparse,
-				Name:        "sparse.db",
-				Size:        1000,
-				SparseHoles: []SparseEntry{{Offset: 1000, Length: 0}},
-			}, nil},
-			testWrite{strings.Repeat("0123456789", 100), 1000, nil},
-			testClose{},
-		},
-	}, {
-		file: "testdata/gnu-nil-sparse-hole.tar",
-		tests: []testFnc{
-			testHeader{Header{
-				Typeflag:    TypeGNUSparse,
-				Name:        "sparse.db",
-				Size:        1000,
-				SparseHoles: []SparseEntry{{Offset: 0, Length: 1000}},
-			}, nil},
-			testWrite{strings.Repeat("\x00", 1000), 1000, nil},
-			testClose{},
-		},
-	}, {
-		file: "testdata/pax-nil-sparse-data.tar",
-		tests: []testFnc{
-			testHeader{Header{
-				Typeflag:    TypeReg,
-				Name:        "sparse.db",
-				Size:        1000,
-				SparseHoles: []SparseEntry{{Offset: 1000, Length: 0}},
-			}, nil},
-			testWrite{strings.Repeat("0123456789", 100), 1000, nil},
-			testClose{},
-		},
-	}, {
-		file: "testdata/pax-nil-sparse-hole.tar",
-		tests: []testFnc{
-			testHeader{Header{
-				Typeflag:    TypeReg,
-				Name:        "sparse.db",
-				Size:        1000,
-				SparseHoles: []SparseEntry{{Offset: 0, Length: 1000}},
-			}, nil},
-			testWrite{strings.Repeat("\x00", 1000), 1000, nil},
-			testClose{},
-		},
-	}, {
-		file: "testdata/gnu-sparse-big.tar",
-		tests: []testFnc{
-			testHeader{Header{
-				Typeflag: TypeGNUSparse,
-				Name:     "gnu-sparse",
-				Size:     6e10,
-				SparseHoles: []SparseEntry{
-					{Offset: 0e10, Length: 1e10 - 100},
-					{Offset: 1e10, Length: 1e10 - 100},
-					{Offset: 2e10, Length: 1e10 - 100},
-					{Offset: 3e10, Length: 1e10 - 100},
-					{Offset: 4e10, Length: 1e10 - 100},
-					{Offset: 5e10, Length: 1e10 - 100},
+		// TODO(dsnet): Re-enable this test when adding sparse support.
+		// See https://golang.org/issue/22735
+		/*
+			}, {
+				file: "testdata/gnu-nil-sparse-data.tar",
+				tests: []testFnc{
+					testHeader{Header{
+						Typeflag:    TypeGNUSparse,
+						Name:        "sparse.db",
+						Size:        1000,
+						SparseHoles: []sparseEntry{{Offset: 1000, Length: 0}},
+					}, nil},
+					testWrite{strings.Repeat("0123456789", 100), 1000, nil},
+					testClose{},
 				},
-			}, nil},
-			testReadFrom{fileOps{
-				int64(1e10 - blockSize),
-				strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
-				int64(1e10 - blockSize),
-				strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
-				int64(1e10 - blockSize),
-				strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
-				int64(1e10 - blockSize),
-				strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
-				int64(1e10 - blockSize),
-				strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
-				int64(1e10 - blockSize),
-				strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
-			}, 6e10, nil},
+			}, {
+				file: "testdata/gnu-nil-sparse-hole.tar",
+				tests: []testFnc{
+					testHeader{Header{
+						Typeflag:    TypeGNUSparse,
+						Name:        "sparse.db",
+						Size:        1000,
+						SparseHoles: []sparseEntry{{Offset: 0, Length: 1000}},
+					}, nil},
+					testWrite{strings.Repeat("\x00", 1000), 1000, nil},
+					testClose{},
+				},
+			}, {
+				file: "testdata/pax-nil-sparse-data.tar",
+				tests: []testFnc{
+					testHeader{Header{
+						Typeflag:    TypeReg,
+						Name:        "sparse.db",
+						Size:        1000,
+						SparseHoles: []sparseEntry{{Offset: 1000, Length: 0}},
+					}, nil},
+					testWrite{strings.Repeat("0123456789", 100), 1000, nil},
+					testClose{},
+				},
+			}, {
+				file: "testdata/pax-nil-sparse-hole.tar",
+				tests: []testFnc{
+					testHeader{Header{
+						Typeflag:    TypeReg,
+						Name:        "sparse.db",
+						Size:        1000,
+						SparseHoles: []sparseEntry{{Offset: 0, Length: 1000}},
+					}, nil},
+					testWrite{strings.Repeat("\x00", 1000), 1000, nil},
+					testClose{},
+				},
+			}, {
+				file: "testdata/gnu-sparse-big.tar",
+				tests: []testFnc{
+					testHeader{Header{
+						Typeflag: TypeGNUSparse,
+						Name:     "gnu-sparse",
+						Size:     6e10,
+						SparseHoles: []sparseEntry{
+							{Offset: 0e10, Length: 1e10 - 100},
+							{Offset: 1e10, Length: 1e10 - 100},
+							{Offset: 2e10, Length: 1e10 - 100},
+							{Offset: 3e10, Length: 1e10 - 100},
+							{Offset: 4e10, Length: 1e10 - 100},
+							{Offset: 5e10, Length: 1e10 - 100},
+						},
+					}, nil},
+					testReadFrom{fileOps{
+						int64(1e10 - blockSize),
+						strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
+						int64(1e10 - blockSize),
+						strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
+						int64(1e10 - blockSize),
+						strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
+						int64(1e10 - blockSize),
+						strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
+						int64(1e10 - blockSize),
+						strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
+						int64(1e10 - blockSize),
+						strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
+					}, 6e10, nil},
+					testClose{nil},
+				},
+			}, {
+				file: "testdata/pax-sparse-big.tar",
+				tests: []testFnc{
+					testHeader{Header{
+						Typeflag: TypeReg,
+						Name:     "pax-sparse",
+						Size:     6e10,
+						SparseHoles: []sparseEntry{
+							{Offset: 0e10, Length: 1e10 - 100},
+							{Offset: 1e10, Length: 1e10 - 100},
+							{Offset: 2e10, Length: 1e10 - 100},
+							{Offset: 3e10, Length: 1e10 - 100},
+							{Offset: 4e10, Length: 1e10 - 100},
+							{Offset: 5e10, Length: 1e10 - 100},
+						},
+					}, nil},
+					testReadFrom{fileOps{
+						int64(1e10 - blockSize),
+						strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
+						int64(1e10 - blockSize),
+						strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
+						int64(1e10 - blockSize),
+						strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
+						int64(1e10 - blockSize),
+						strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
+						int64(1e10 - blockSize),
+						strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
+						int64(1e10 - blockSize),
+						strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
+					}, 6e10, nil},
+					testClose{nil},
+				},
+		*/
+	}, {
+		file: "testdata/trailing-slash.tar",
+		tests: []testFnc{
+			testHeader{Header{Name: strings.Repeat("123456789/", 30)}, nil},
 			testClose{nil},
 		},
 	}, {
-		file: "testdata/pax-sparse-big.tar",
+		// Automatically promote zero value of Typeflag depending on the name.
+		file: "testdata/file-and-dir.tar",
 		tests: []testFnc{
-			testHeader{Header{
-				Typeflag: TypeReg,
-				Name:     "pax-sparse",
-				Size:     6e10,
-				SparseHoles: []SparseEntry{
-					{Offset: 0e10, Length: 1e10 - 100},
-					{Offset: 1e10, Length: 1e10 - 100},
-					{Offset: 2e10, Length: 1e10 - 100},
-					{Offset: 3e10, Length: 1e10 - 100},
-					{Offset: 4e10, Length: 1e10 - 100},
-					{Offset: 5e10, Length: 1e10 - 100},
-				},
-			}, nil},
-			testReadFrom{fileOps{
-				int64(1e10 - blockSize),
-				strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
-				int64(1e10 - blockSize),
-				strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
-				int64(1e10 - blockSize),
-				strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
-				int64(1e10 - blockSize),
-				strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
-				int64(1e10 - blockSize),
-				strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
-				int64(1e10 - blockSize),
-				strings.Repeat("\x00", blockSize-100) + strings.Repeat("0123456789", 10),
-			}, 6e10, nil},
+			testHeader{Header{Name: "small.txt", Size: 5}, nil},
+			testWrite{"Kilts", 5, nil},
+			testHeader{Header{Name: "dir/"}, nil},
 			testClose{nil},
 		},
 	}}
@@ -480,7 +499,7 @@ func TestWriter(t *testing.T) {
 					}
 				case testReadFrom:
 					f := &testFile{ops: tf.ops}
-					got, err := tw.ReadFrom(f)
+					got, err := tw.readFrom(f)
 					if _, ok := err.(testError); ok {
 						t.Errorf("test %d, ReadFrom(): %v", i, err)
 					} else if got != tf.wantCnt || !equalError(err, tf.wantErr) {
@@ -500,7 +519,7 @@ func TestWriter(t *testing.T) {
 			}
 
 			if v.file != "" {
-				want, err := ioutil.ReadFile(v.file)
+				want, err := os.ReadFile(v.file)
 				if err != nil {
 					t.Fatalf("ReadFile() = %v, want nil", err)
 				}
@@ -798,8 +817,8 @@ func TestValidTypeflagWithPAXHeader(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to read header: %s", err)
 		}
-		if header.Typeflag != 0 {
-			t.Fatalf("Typeflag should've been 0, found %d", header.Typeflag)
+		if header.Typeflag != TypeReg {
+			t.Fatalf("Typeflag should've been %d, found %d", TypeReg, header.Typeflag)
 		}
 	}
 }
@@ -985,6 +1004,17 @@ func TestIssue12594(t *testing.T) {
 			t.Errorf("test %d, hdr.Name = %s, want %s", i, hdr.Name, name)
 		}
 	}
+}
+
+// testNonEmptyWriter wraps an io.Writer and ensures that
+// Write is never called with an empty buffer.
+type testNonEmptyWriter struct{ io.Writer }
+
+func (w testNonEmptyWriter) Write(b []byte) (int, error) {
+	if len(b) == 0 {
+		return 0, errors.New("unexpected empty Write call")
+	}
+	return w.Writer.Write(b)
 }
 
 func TestFileWriter(t *testing.T) {
@@ -1225,17 +1255,18 @@ func TestFileWriter(t *testing.T) {
 	for i, v := range vectors {
 		var wantStr string
 		bb := new(bytes.Buffer)
+		w := testNonEmptyWriter{bb}
 		var fw fileWriter
 		switch maker := v.maker.(type) {
 		case makeReg:
-			fw = &regFileWriter{bb, maker.size}
+			fw = &regFileWriter{w, maker.size}
 			wantStr = maker.wantStr
 		case makeSparse:
 			if !validateSparseEntries(maker.sph, maker.size) {
 				t.Fatalf("invalid sparse map: %v", maker.sph)
 			}
 			spd := invertSparseEntries(maker.sph, maker.size)
-			fw = &regFileWriter{bb, maker.makeReg.size}
+			fw = &regFileWriter{w, maker.makeReg.size}
 			fw = &sparseFileWriter{fw, spd, 0}
 			wantStr = maker.makeReg.wantStr
 		default:

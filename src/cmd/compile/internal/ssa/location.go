@@ -5,6 +5,7 @@
 package ssa
 
 import (
+	"cmd/compile/internal/ir"
 	"cmd/compile/internal/types"
 	"fmt"
 )
@@ -19,6 +20,7 @@ type Location interface {
 type Register struct {
 	num    int32 // dense numbering
 	objNum int16 // register number from cmd/internal/obj/$ARCH
+	gcNum  int16 // GC register map number (dense numbering of registers that can contain pointers)
 	name   string
 }
 
@@ -30,6 +32,12 @@ func (r *Register) String() string {
 // corresponds to this register.
 func (r *Register) ObjNum() int16 {
 	return r.objNum
+}
+
+// GCNum returns the runtime GC register index of r, or -1 if this
+// register can't contain pointers.
+func (r *Register) GCNum() int16 {
+	return r.gcNum
 }
 
 // A LocalSlot is a location in the stack frame, which identifies and stores
@@ -52,7 +60,7 @@ func (r *Register) ObjNum() int16 {
 //                           { N: len, Type: int, Off: 0, SplitOf: parent, SplitOffset: 8}
 //                           parent = &{N: s, Type: string}
 type LocalSlot struct {
-	N    GCNode      // an ONAME *gc.Node representing a stack location.
+	N    *ir.Name    // an ONAME *ir.Name representing a stack location.
 	Type *types.Type // type of slot
 	Off  int64       // offset of slot in N
 
@@ -77,5 +85,45 @@ func (t LocPair) String() string {
 	if t[1] != nil {
 		n1 = t[1].String()
 	}
+	return fmt.Sprintf("<%s,%s>", n0, n1)
+}
+
+type LocResults []Location
+
+func (t LocResults) String() string {
+	s := "<"
+	a := ""
+	for _, r := range t {
+		a += s
+		s = ","
+		a += r.String()
+	}
+	a += ">"
+	return a
+}
+
+type ArgPair struct {
+	reg *Register
+	mem LocalSlot
+}
+
+func (ap *ArgPair) Reg() int16 {
+	return ap.reg.objNum
+}
+
+func (ap *ArgPair) Type() *types.Type {
+	return ap.mem.Type
+}
+
+func (ap *ArgPair) Mem() *LocalSlot {
+	return &ap.mem
+}
+
+func (t ArgPair) String() string {
+	n0 := "nil"
+	if t.reg != nil {
+		n0 = t.reg.String()
+	}
+	n1 := t.mem.String()
 	return fmt.Sprintf("<%s,%s>", n0, n1)
 }

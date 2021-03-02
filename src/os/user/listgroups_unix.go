@@ -2,7 +2,10 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build (dragonfly || darwin || freebsd || (!android && linux) || netbsd || openbsd) && cgo && !osusergo
 // +build dragonfly darwin freebsd !android,linux netbsd openbsd
+// +build cgo
+// +build !osusergo
 
 package user
 
@@ -18,6 +21,8 @@ import (
 */
 import "C"
 
+const maxGroups = 2048
+
 func listGroups(u *User) ([]string, error) {
 	ug, err := strconv.Atoi(u.Gid)
 	if err != nil {
@@ -31,15 +36,10 @@ func listGroups(u *User) ([]string, error) {
 	gidsC := make([]C.gid_t, n)
 	rv := getGroupList((*C.char)(unsafe.Pointer(&nameC[0])), userGID, &gidsC[0], &n)
 	if rv == -1 {
-		// More than initial buffer, but now n contains the correct size.
-		const maxGroups = 2048
-		if n > maxGroups {
-			return nil, fmt.Errorf("user: list groups for %s: member of more than %d groups", u.Username, maxGroups)
-		}
-		gidsC = make([]C.gid_t, n)
-		rv := getGroupList((*C.char)(unsafe.Pointer(&nameC[0])), userGID, &gidsC[0], &n)
-		if rv == -1 {
-			return nil, fmt.Errorf("user: list groups for %s failed (changed groups?)", u.Username)
+		// Mac is the only Unix that does not set n properly when rv == -1, so
+		// we need to use different logic for Mac vs. the other OS's.
+		if err := groupRetry(u.Username, nameC, userGID, &gidsC, &n); err != nil {
+			return nil, err
 		}
 	}
 	gidsC = gidsC[:n]

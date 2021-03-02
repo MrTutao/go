@@ -17,6 +17,7 @@ import (
 	"go/ast"
 	"go/printer"
 	"go/token"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -24,6 +25,9 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"cmd/internal/edit"
+	"cmd/internal/objabi"
 )
 
 // A Package collects information about the package we're going to write.
@@ -39,9 +43,18 @@ type Package struct {
 	Name        map[string]*Name // accumulated Name from Files
 	ExpFunc     []*ExpFunc       // accumulated ExpFunc from Files
 	Decl        []ast.Decl
-	GoFiles     []string // list of Go files
-	GccFiles    []string // list of gcc output files
-	Preamble    string   // collected preamble for _cgo_export.h
+	GoFiles     []string        // list of Go files
+	GccFiles    []string        // list of gcc output files
+	Preamble    string          // collected preamble for _cgo_export.h
+	typedefs    map[string]bool // type names that appear in the types of the objects we're interested in
+	typedefList []typedefInfo
+}
+
+// A typedefInfo is an element on Package.typedefList: a typedef name
+// and the position where it was required.
+type typedefInfo struct {
+	typedef string
+	pos     token.Pos
 }
 
 // A File collects information about a single Go input file.
@@ -55,6 +68,11 @@ type File struct {
 	ExpFunc  []*ExpFunc          // exported functions for this file
 	Name     map[string]*Name    // map from Go name to Name
 	NamePos  map[*Name]token.Pos // map from Name to position of the first reference
+	Edit     *edit.Buffer
+}
+
+func (f *File) offset(p token.Pos) int {
+	return fset.Position(p).Offset
 }
 
 func nameKeys(m map[string]*Name) []string {
@@ -70,6 +88,7 @@ func nameKeys(m map[string]*Name) []string {
 type Call struct {
 	Call     *ast.CallExpr
 	Deferred bool
+	Done     bool
 }
 
 // A Ref refers to an expression of the form C.xxx in the AST.
@@ -77,11 +96,14 @@ type Ref struct {
 	Name    *Name
 	Expr    *ast.Expr
 	Context astContext
+	Done    bool
 }
 
 func (r *Ref) Pos() token.Pos {
 	return (*r.Expr).Pos()
 }
+
+var nameKinds = []string{"iconst", "fconst", "sconst", "type", "var", "fpvar", "func", "macro", "not-type"}
 
 // A Name collects information about C.xxx.
 type Name struct {
@@ -89,7 +111,7 @@ type Name struct {
 	Mangle   string // name used in generated Go
 	C        string // name used in C
 	Define   string // #define expansion
-	Kind     string // "iconst", "fconst", "sconst", "type", "var", "fpvar", "func", "macro", "not-type"
+	Kind     string // one of the nameKinds
 	Type     *Type  // the type of xxx
 	FuncType *FuncType
 	AddError bool
@@ -129,6 +151,8 @@ type Type struct {
 	Go         ast.Expr
 	EnumValues map[string]int64
 	Typedef    string
+	BadPointer bool // this pointer type should be represented as a uintptr (deprecated)
+	NotInHeap  bool // this type should have a go:notinheap annotation
 }
 
 // A FuncType collects information about a function type in both the C and Go worlds.
@@ -146,32 +170,52 @@ func usage() {
 
 var ptrSizeMap = map[string]int64{
 	"386":      4,
+	"alpha":    8,
 	"amd64":    8,
 	"arm":      4,
 	"arm64":    8,
+	"m68k":     4,
 	"mips":     4,
 	"mipsle":   4,
 	"mips64":   8,
 	"mips64le": 8,
+	"nios2":    4,
+	"ppc":      4,
 	"ppc64":    8,
 	"ppc64le":  8,
+	"riscv":    4,
+	"riscv64":  8,
 	"s390":     4,
 	"s390x":    8,
+	"sh":       4,
+	"shbe":     4,
+	"sparc":    4,
+	"sparc64":  8,
 }
 
 var intSizeMap = map[string]int64{
 	"386":      4,
+	"alpha":    8,
 	"amd64":    8,
 	"arm":      4,
 	"arm64":    8,
+	"m68k":     4,
 	"mips":     4,
 	"mipsle":   4,
 	"mips64":   8,
 	"mips64le": 8,
+	"nios2":    4,
+	"ppc":      4,
 	"ppc64":    8,
 	"ppc64le":  8,
+	"riscv":    4,
+	"riscv64":  8,
 	"s390":     4,
 	"s390x":    8,
+	"sh":       4,
+	"shbe":     4,
+	"sparc":    4,
+	"sparc64":  8,
 }
 
 var cPrefix string
@@ -196,11 +240,15 @@ var exportHeader = flag.String("exportheader", "", "where to write export header
 var gccgo = flag.Bool("gccgo", false, "generate files for use with gccgo")
 var gccgoprefix = flag.String("gccgoprefix", "", "-fgo-prefix option used with gccgo")
 var gccgopkgpath = flag.String("gccgopkgpath", "", "-fgo-pkgpath option used with gccgo")
+var gccgoMangler func(string) string
 var importRuntimeCgo = flag.Bool("import_runtime_cgo", true, "import runtime/cgo in generated code")
 var importSyscall = flag.Bool("import_syscall", true, "import syscall in generated code")
-var goarch, goos string
+var trimpath = flag.String("trimpath", "", "applies supplied rewrites or trims prefixes to recorded source file paths")
+
+var goarch, goos, gomips, gomips64 string
 
 func main() {
+	objabi.AddVersionFlag() // -V
 	flag.Usage = usage
 	flag.Parse()
 
@@ -247,6 +295,9 @@ func main() {
 		if arg == "-fsanitize=thread" {
 			tsanProlog = yesTsanProlog
 		}
+		if arg == "-fsanitize=memory" {
+			msanProlog = yesMsanProlog
+		}
 	}
 
 	p := newPackage(args[:i])
@@ -266,10 +317,18 @@ func main() {
 	// concern is other cgo wrappers for the same functions.
 	// Use the beginning of the md5 of the input to disambiguate.
 	h := md5.New()
+	io.WriteString(h, *importPath)
 	fs := make([]*File, len(goFiles))
 	for i, input := range goFiles {
 		if *srcDir != "" {
 			input = filepath.Join(*srcDir, input)
+		}
+
+		// Create absolute path for file, so that it will be used in error
+		// messages and recorded in debug line number information.
+		// This matches the rest of the toolchain. See golang.org/issue/5122.
+		if aname, err := filepath.Abs(input); err == nil {
+			input = aname
 		}
 
 		b, err := ioutil.ReadFile(input)
@@ -280,7 +339,12 @@ func main() {
 			fatalf("%s", err)
 		}
 
+		// Apply trimpath to the file path. The path won't be read from after this point.
+		input, _ = objabi.ApplyRewrites(input, *trimpath)
+		goFiles[i] = input
+
 		f := new(File)
+		f.Edit = edit.NewBuffer(b)
 		f.ParseGo(input, b)
 		f.DiscardCgoDirectives()
 		fs[i] = f
@@ -305,7 +369,9 @@ func main() {
 				if cref.Name.Kind != "type" {
 					break
 				}
+				old := *cref.Expr
 				*cref.Expr = cref.Name.Type.Go
+				f.Edit.Replace(f.offset(old.Pos()), f.offset(old.End()), gofmt(cref.Name.Type.Go))
 			}
 		}
 		if nerrors > 0 {
@@ -314,7 +380,7 @@ func main() {
 		p.PackagePath = f.Package
 		p.Record(f)
 		if *godefs {
-			os.Stdout.WriteString(p.godefs(f, input))
+			os.Stdout.WriteString(p.godefs(f))
 		} else {
 			p.writeOutput(f, input)
 		}
@@ -339,6 +405,8 @@ func newPackage(args []string) *Package {
 	if s := os.Getenv("GOOS"); s != "" {
 		goos = s
 	}
+	gomips = objabi.GOMIPS
+	gomips64 = objabi.GOMIPS64
 	ptrSize := ptrSizeMap[goarch]
 	if ptrSize == 0 {
 		fatalf("unknown ptrSize for $GOARCH %q", goarch)
@@ -376,6 +444,14 @@ func (p *Package) Record(f *File) {
 		for k, v := range f.Name {
 			if p.Name[k] == nil {
 				p.Name[k] = v
+			} else if p.incompleteTypedef(p.Name[k].Type) {
+				p.Name[k] = v
+			} else if p.incompleteTypedef(v.Type) {
+				// Nothing to do.
+			} else if _, ok := nameToC[k]; ok {
+				// Names we predefine may appear inconsistent
+				// if some files typedef them and some don't.
+				// Issue 26743.
 			} else if !reflect.DeepEqual(p.Name[k], v) {
 				error_(token.NoPos, "inconsistent definitions for C.%s", fixGo(k))
 			}
@@ -387,4 +463,10 @@ func (p *Package) Record(f *File) {
 		p.Preamble += "\n" + f.Preamble
 	}
 	p.Decl = append(p.Decl, f.AST.Decls...)
+}
+
+// incompleteTypedef reports whether t appears to be an incomplete
+// typedef definition.
+func (p *Package) incompleteTypedef(t *Type) bool {
+	return t == nil || (t.Size == 0 && t.Align == -1)
 }

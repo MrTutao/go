@@ -6,9 +6,9 @@ package bytes_test
 
 import (
 	. "bytes"
+	"fmt"
 	"io"
 	"math/rand"
-	"runtime"
 	"testing"
 	"unicode/utf8"
 )
@@ -16,6 +16,10 @@ import (
 const N = 10000       // make this bigger for a larger (and slower) test
 var testString string // test data for write tests
 var testBytes []byte  // test data; same as testString but as a slice.
+
+type negativeReader struct{}
+
+func (r *negativeReader) Read([]byte) (int, error) { return -1, nil }
 
 func init() {
 	testBytes = make([]byte, N)
@@ -127,11 +131,8 @@ func TestBasicOperations(t *testing.T) {
 		check(t, "TestBasicOperations (3)", &buf, "")
 
 		n, err := buf.Write(testBytes[0:1])
-		if n != 1 {
-			t.Errorf("wrote 1 byte, but n == %d", n)
-		}
-		if err != nil {
-			t.Errorf("err should always be nil, but err == %s", err)
+		if want := 1; err != nil || n != want {
+			t.Errorf("Write: got (%d, %v), want (%d, %v)", n, err, want, nil)
 		}
 		check(t, "TestBasicOperations (4)", &buf, "a")
 
@@ -139,8 +140,8 @@ func TestBasicOperations(t *testing.T) {
 		check(t, "TestBasicOperations (5)", &buf, "ab")
 
 		n, err = buf.Write(testBytes[2:26])
-		if n != 24 {
-			t.Errorf("wrote 24 bytes, but n == %d", n)
+		if want := 24; err != nil || n != want {
+			t.Errorf("Write: got (%d, %v), want (%d, %v)", n, err, want, nil)
 		}
 		check(t, "TestBasicOperations (6)", &buf, testString[0:26])
 
@@ -155,15 +156,12 @@ func TestBasicOperations(t *testing.T) {
 
 		buf.WriteByte(testString[1])
 		c, err := buf.ReadByte()
-		if err != nil {
-			t.Error("ReadByte unexpected eof")
-		}
-		if c != testString[1] {
-			t.Errorf("ReadByte wrong value c=%v", c)
+		if want := testString[1]; err != nil || c != want {
+			t.Errorf("ReadByte: got (%q, %v), want (%q, %v)", c, err, want, nil)
 		}
 		c, err = buf.ReadByte()
-		if err == nil {
-			t.Error("ReadByte unexpected not eof")
+		if err != io.EOF {
+			t.Errorf("ReadByte: got (%q, %v), want (%q, %v)", c, err, byte(0), io.EOF)
 		}
 	}
 }
@@ -265,6 +263,59 @@ func TestReadFrom(t *testing.T) {
 	}
 }
 
+type panicReader struct{ panic bool }
+
+func (r panicReader) Read(p []byte) (int, error) {
+	if r.panic {
+		panic(nil)
+	}
+	return 0, io.EOF
+}
+
+// Make sure that an empty Buffer remains empty when
+// it is "grown" before a Read that panics
+func TestReadFromPanicReader(t *testing.T) {
+
+	// First verify non-panic behaviour
+	var buf Buffer
+	i, err := buf.ReadFrom(panicReader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i != 0 {
+		t.Fatalf("unexpected return from bytes.ReadFrom (1): got: %d, want %d", i, 0)
+	}
+	check(t, "TestReadFromPanicReader (1)", &buf, "")
+
+	// Confirm that when Reader panics, the empty buffer remains empty
+	var buf2 Buffer
+	defer func() {
+		recover()
+		check(t, "TestReadFromPanicReader (2)", &buf2, "")
+	}()
+	buf2.ReadFrom(panicReader{panic: true})
+}
+
+func TestReadFromNegativeReader(t *testing.T) {
+	var b Buffer
+	defer func() {
+		switch err := recover().(type) {
+		case nil:
+			t.Fatal("bytes.Buffer.ReadFrom didn't panic")
+		case error:
+			// this is the error string of errNegativeRead
+			wantError := "bytes.Buffer: reader returned negative count from Read"
+			if err.Error() != wantError {
+				t.Fatalf("recovered panic: got %v, want %v", err.Error(), wantError)
+			}
+		default:
+			t.Fatalf("unexpected panic value: %#v", err)
+		}
+	}()
+
+	b.ReadFrom(new(negativeReader))
+}
+
 func TestWriteTo(t *testing.T) {
 	var buf Buffer
 	for i := 3; i < 30; i += 3 {
@@ -334,6 +385,16 @@ func TestRuneIO(t *testing.T) {
 		if r1 != r2 || r1 != r || nbytes != size || err != nil {
 			t.Fatalf("ReadRune(%U) after UnreadRune got %U,%d not %U,%d (err=%s)", r, r2, nbytes, r, size, err)
 		}
+	}
+}
+
+func TestWriteInvalidRune(t *testing.T) {
+	// Invalid runes, including negative ones, should be written as
+	// utf8.RuneError.
+	for _, r := range []rune{-1, utf8.MaxRune + 1} {
+		var buf Buffer
+		buf.WriteRune(r)
+		check(t, fmt.Sprintf("TestWriteInvalidRune (%d)", r), &buf, "\uFFFD")
 	}
 }
 
@@ -444,20 +505,20 @@ func TestGrow(t *testing.T) {
 	x := []byte{'x'}
 	y := []byte{'y'}
 	tmp := make([]byte, 72)
-	for _, startLen := range []int{0, 100, 1000, 10000, 100000} {
-		xBytes := Repeat(x, startLen)
-		for _, growLen := range []int{0, 100, 1000, 10000, 100000} {
+	for _, growLen := range []int{0, 100, 1000, 10000, 100000} {
+		for _, startLen := range []int{0, 100, 1000, 10000, 100000} {
+			xBytes := Repeat(x, startLen)
+
 			buf := NewBuffer(xBytes)
 			// If we read, this affects buf.off, which is good to test.
 			readBytes, _ := buf.Read(tmp)
-			buf.Grow(growLen)
 			yBytes := Repeat(y, growLen)
+			allocs := testing.AllocsPerRun(100, func() {
+				buf.Grow(growLen)
+				buf.Write(yBytes)
+			})
 			// Check no allocation occurs in write, as long as we're single-threaded.
-			var m1, m2 runtime.MemStats
-			runtime.ReadMemStats(&m1)
-			buf.Write(yBytes)
-			runtime.ReadMemStats(&m2)
-			if runtime.GOMAXPROCS(-1) == 1 && m1.Mallocs != m2.Mallocs {
+			if allocs != 0 {
 				t.Errorf("allocation occurred during write")
 			}
 			// Check that buffer has correct data.

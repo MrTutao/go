@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build darwin dragonfly freebsd !android,linux nacl netbsd openbsd solaris
+//go:build (aix || darwin || dragonfly || freebsd || (!android && linux) || netbsd || openbsd || solaris) && !cgo
+// +build aix darwin dragonfly freebsd !android,linux netbsd openbsd solaris
 // +build !cgo
 
 package user

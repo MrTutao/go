@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build ignore
 // +build ignore
 
 /*
@@ -109,6 +110,12 @@ type Flock_t C.struct_flock
 type Dirent C.struct_dirent
 
 type Fsid C.fsid_t
+
+// File system limits
+
+const (
+	pathMax = C.PATH_MAX
+)
 
 // Sockets
 
@@ -236,3 +243,7 @@ type Termios C.struct_termios
 // Sysctl
 
 type Sysctlnode C.struct_sysctlnode
+
+// Signals
+
+type sigset C.sigset_t

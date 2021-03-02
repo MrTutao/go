@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build dragonfly freebsd linux
+//go:build dragonfly || freebsd || illumos || linux || netbsd || openbsd
+// +build dragonfly freebsd illumos linux netbsd openbsd
 
 package poll
 

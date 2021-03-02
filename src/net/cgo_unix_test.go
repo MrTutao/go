@@ -2,8 +2,10 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build cgo,!netgo
-// +build darwin dragonfly freebsd linux netbsd openbsd solaris
+//go:build cgo && !netgo && (aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris)
+// +build cgo
+// +build !netgo
+// +build aix darwin dragonfly freebsd linux netbsd openbsd solaris
 
 package net
 
@@ -13,8 +15,9 @@ import (
 )
 
 func TestCgoLookupIP(t *testing.T) {
+	defer dnsWaitGroup.Wait()
 	ctx := context.Background()
-	_, err, ok := cgoLookupIP(ctx, "localhost")
+	_, err, ok := cgoLookupIP(ctx, "ip", "localhost")
 	if !ok {
 		t.Errorf("cgoLookupIP must not be a placeholder")
 	}
@@ -24,9 +27,10 @@ func TestCgoLookupIP(t *testing.T) {
 }
 
 func TestCgoLookupIPWithCancel(t *testing.T) {
+	defer dnsWaitGroup.Wait()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_, err, ok := cgoLookupIP(ctx, "localhost")
+	_, err, ok := cgoLookupIP(ctx, "ip", "localhost")
 	if !ok {
 		t.Errorf("cgoLookupIP must not be a placeholder")
 	}
@@ -36,6 +40,7 @@ func TestCgoLookupIPWithCancel(t *testing.T) {
 }
 
 func TestCgoLookupPort(t *testing.T) {
+	defer dnsWaitGroup.Wait()
 	ctx := context.Background()
 	_, err, ok := cgoLookupPort(ctx, "tcp", "smtp")
 	if !ok {
@@ -47,6 +52,7 @@ func TestCgoLookupPort(t *testing.T) {
 }
 
 func TestCgoLookupPortWithCancel(t *testing.T) {
+	defer dnsWaitGroup.Wait()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_, err, ok := cgoLookupPort(ctx, "tcp", "smtp")
@@ -59,6 +65,7 @@ func TestCgoLookupPortWithCancel(t *testing.T) {
 }
 
 func TestCgoLookupPTR(t *testing.T) {
+	defer dnsWaitGroup.Wait()
 	ctx := context.Background()
 	_, err, ok := cgoLookupPTR(ctx, "127.0.0.1")
 	if !ok {
@@ -70,6 +77,7 @@ func TestCgoLookupPTR(t *testing.T) {
 }
 
 func TestCgoLookupPTRWithCancel(t *testing.T) {
+	defer dnsWaitGroup.Wait()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_, err, ok := cgoLookupPTR(ctx, "127.0.0.1")

@@ -8,10 +8,10 @@ package printer
 import (
 	"fmt"
 	"go/ast"
+	"go/build/constraint"
 	"go/token"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"unicode"
@@ -56,14 +56,17 @@ type printer struct {
 	fset *token.FileSet
 
 	// Current state
-	output      []byte       // raw printer result
-	indent      int          // current indentation
-	level       int          // level == 0: outside composite literal; level > 0: inside composite literal
-	mode        pmode        // current printer mode
-	impliedSemi bool         // if set, a linebreak implies a semicolon
-	lastTok     token.Token  // last token printed (token.ILLEGAL if it's whitespace)
-	prevOpen    token.Token  // previous non-brace "open" token (, [, or token.ILLEGAL
-	wsbuf       []whiteSpace // delayed white space
+	output       []byte       // raw printer result
+	indent       int          // current indentation
+	level        int          // level == 0: outside composite literal; level > 0: inside composite literal
+	mode         pmode        // current printer mode
+	endAlignment bool         // if set, terminate alignment immediately
+	impliedSemi  bool         // if set, a linebreak implies a semicolon
+	lastTok      token.Token  // last token printed (token.ILLEGAL if it's whitespace)
+	prevOpen     token.Token  // previous non-brace "open" token (, [, or token.ILLEGAL
+	wsbuf        []whiteSpace // delayed white space
+	goBuild      []int        // start index of all //go:build comments in output
+	plusBuild    []int        // start index of all // +build comments in output
 
 	// Positions
 	// The out position differs from the pos position when the result
@@ -192,13 +195,13 @@ func (p *printer) linesFrom(line int) int {
 
 func (p *printer) posFor(pos token.Pos) token.Position {
 	// not used frequently enough to cache entire token.Position
-	return p.fset.Position(pos)
+	return p.fset.PositionFor(pos, false /* absolute position */)
 }
 
 func (p *printer) lineFor(pos token.Pos) int {
 	if pos != p.cachedPos {
 		p.cachedPos = pos
-		p.cachedLine = p.fset.Position(pos).Line
+		p.cachedLine = p.fset.PositionFor(pos, false /* absolute position */).Line
 	}
 	return p.cachedLine
 }
@@ -233,6 +236,20 @@ func (p *printer) writeIndent() {
 // writeByte writes ch n times to p.output and updates p.pos.
 // Only used to write formatting (white space) characters.
 func (p *printer) writeByte(ch byte, n int) {
+	if p.endAlignment {
+		// Ignore any alignment control character;
+		// and at the end of the line, break with
+		// a formfeed to indicate termination of
+		// existing columns.
+		switch ch {
+		case '\t', '\v':
+			ch = ' '
+		case '\n', '\f':
+			ch = '\f'
+			p.endAlignment = false
+		}
+	}
+
 	if p.out.Column == 1 {
 		// no need to write line directives before white space
 		p.writeIndent()
@@ -299,10 +316,15 @@ func (p *printer) writeString(pos token.Position, s string, isLit bool) {
 	nlines := 0
 	var li int // index of last newline; valid if nlines > 0
 	for i := 0; i < len(s); i++ {
-		// Go tokens cannot contain '\f' - no need to look for it
-		if s[i] == '\n' {
+		// Raw string literals may contain any character except back quote (`).
+		if ch := s[i]; ch == '\n' || ch == '\f' {
+			// account for line break
 			nlines++
 			li = i
+			// A line break inside a literal will break whatever column
+			// formatting is in place; ignore any further alignment through
+			// the end of the line.
+			p.endAlignment = true
 		}
 	}
 	p.pos.Offset += len(s)
@@ -622,28 +644,19 @@ func (p *printer) writeComment(comment *ast.Comment) {
 
 	const linePrefix = "//line "
 	if strings.HasPrefix(text, linePrefix) && (!pos.IsValid() || pos.Column == 1) {
-		// possibly a line directive
-		ldir := strings.TrimSpace(text[len(linePrefix):])
-		if i := strings.LastIndex(ldir, ":"); i >= 0 {
-			if line, err := strconv.Atoi(ldir[i+1:]); err == nil && line > 0 {
-				// The line directive we are about to print changed
-				// the Filename and Line number used for subsequent
-				// tokens. We have to update our AST-space position
-				// accordingly and suspend indentation temporarily.
-				indent := p.indent
-				p.indent = 0
-				defer func() {
-					p.pos.Filename = ldir[:i]
-					p.pos.Line = line
-					p.pos.Column = 1
-					p.indent = indent
-				}()
-			}
-		}
+		// Possibly a //-style line directive.
+		// Suspend indentation temporarily to keep line directive valid.
+		defer func(indent int) { p.indent = indent }(p.indent)
+		p.indent = 0
 	}
 
 	// shortcut common case of //-style comments
 	if text[1] == '/' {
+		if constraint.IsGoBuild(text) {
+			p.goBuild = append(p.goBuild, len(p.output))
+		} else if constraint.IsPlusBuild(text) {
+			p.plusBuild = append(p.plusBuild, len(p.output))
+		}
 		p.writeString(pos, trimRight(text), true)
 		return
 	}
@@ -1117,6 +1130,8 @@ func (p *printer) printNode(node interface{}) error {
 	// get comments ready for use
 	p.nextComment()
 
+	p.print(pmode(0))
+
 	// format node
 	switch n := node.(type) {
 	case ast.Expr:
@@ -1273,6 +1288,22 @@ const (
 	SourcePos                  // emit //line directives to preserve original source positions
 )
 
+// The mode below is not included in printer's public API because
+// editing code text is deemed out of scope. Because this mode is
+// unexported, it's also possible to modify or remove it based on
+// the evolving needs of go/format and cmd/gofmt without breaking
+// users. See discussion in CL 240683.
+const (
+	// normalizeNumbers means to canonicalize number
+	// literal prefixes and exponents while printing.
+	//
+	// This value is known in and used by go/format and cmd/gofmt.
+	// It is currently more convenient and performant for those
+	// packages to apply number normalization during printing,
+	// rather than by modifying the AST in advance.
+	normalizeNumbers Mode = 1 << 30
+)
+
 // A Config node controls the output of Fprint.
 type Config struct {
 	Mode     Mode // default: 0
@@ -1291,6 +1322,10 @@ func (cfg *Config) fprint(output io.Writer, fset *token.FileSet, node interface{
 	// print outstanding comments
 	p.impliedSemi = false // EOF acts like a newline
 	p.flush(token.Position{Offset: infinity, Line: infinity}, token.EOF)
+
+	// output is buffered in p.output now.
+	// fix //go:build and // +build comments if needed.
+	p.fixGoBuildLines()
 
 	// redirect output through a trimmer to eliminate trailing whitespace
 	// (Input to a tabwriter must be untrimmed since trailing tabs provide
